@@ -116,13 +116,28 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
-_GITLAB_MENTION_RE = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+# An underscore before the "@" is allowed, since `_@user_` renders as emphasis around a live mention,
+# unless it follows a word character, where it cannot open emphasis and GitLab sees no mention.
+_GITLAB_MENTION_RE = re.compile(r"(?<![^\W_])(?<!/)(?<![^\W_]_)@(?=[\w-])", re.UNICODE)
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
+_GITLAB_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
 _GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
 _GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
 _GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
+# CommonMark HTML block start conditions 1 to 6, the ones that may interrupt a paragraph.
+_GITLAB_HTML_BLOCK_RE = re.compile(
+    r" {0,3}<(?:"
+    r"(?:script|pre|style|textarea)(?:\s|>|$)"
+    r"|!--|\?|![a-z]"
+    r"|/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir"
+    r"|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li"
+    r"|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot"
+    r"|th|thead|title|tr|track|ul)(?:\s|/?>|$)"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _is_gitlab_table_delimiter(line: str) -> bool:
@@ -165,7 +180,8 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                 fence_size = 0
         else:
             fence = _GITLAB_FENCE_RE.match(line)
-            if fence:
+            # A backtick fence may not have a backtick in its info string.
+            if fence and not (fence.group(1)[0] == "`" and "`" in line[fence.end():]):
                 marker = fence.group(1)
                 fence_char, fence_size = marker[0], len(marker)
                 is_code = True
@@ -217,7 +233,8 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     boundary = True
                 else:
                     in_table = False
-                    if _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item:
+                    if (_GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item
+                            or _GITLAB_SETEXT_RE.match(line) or _GITLAB_HTML_BLOCK_RE.match(line)):
                         boundary = True
 
                 if is_list_item:
@@ -275,13 +292,19 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 end += 1
             ticks = end - index
             if not inline_ticks:
-                runs = tick_runs.get(ticks)
+                # A backslash-escaped backtick is a literal character, so it cannot open a code span.
+                # Inside a code span backslashes are literal, so only openers are checked.
+                backslashes = 0
+                while index - backslashes > 0 and text[index - backslashes - 1] == "\\":
+                    backslashes += 1
+                opener = ticks - backslashes % 2
+                runs = tick_runs.get(opener) if opener else None
                 if runs:
                     closer_index = bisect_left(runs, end)
                     boundary_index = bisect_left(boundaries, end)
                     boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
                     if closer_index < len(runs) and runs[closer_index] < boundary:
-                        inline_ticks = ticks
+                        inline_ticks = opener
             elif ticks == inline_ticks:
                 inline_ticks = 0
             output.append(text[index:end])
@@ -300,7 +323,8 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         while next_special < len(text) and text[next_special] not in "@`\n":
             next_special += 1
         chunk = text[index:next_special]
-        prefix = text[index - 1:index] if index else ""
+        # The mention regex looks back two characters, for the "_" and the character before it.
+        prefix = text[max(0, index - 2):index]
         output.append(_GITLAB_MENTION_RE.sub("@\u200b", prefix + chunk)[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":

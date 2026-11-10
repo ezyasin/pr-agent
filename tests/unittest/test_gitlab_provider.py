@@ -152,6 +152,61 @@ def test_neutralize_gitlab_mentions_keeps_a_code_span_across_a_soft_break():
     assert _neutralize_gitlab_mentions(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "the ` char\nHeading\n=====\n@plg-tech/plg ` after",
+        "the ` char\nHeading\n=====\n@\u200bplg-tech/plg ` after",
+    ),
+    (
+        "the ` char\nHeading\n---\n@plg-tech/plg ` after",
+        "the ` char\nHeading\n---\n@\u200bplg-tech/plg ` after",
+    ),
+    (
+        "the ` char\n<div>\n@plg-tech/plg ` after\n</div>",
+        "the ` char\n<div>\n@\u200bplg-tech/plg ` after\n</div>",
+    ),
+    (
+        "the ` char\n<!-- note -->\n@plg-tech/plg ` after",
+        "the ` char\n<!-- note -->\n@\u200bplg-tech/plg ` after",
+    ),
+    (
+        "the ` char\n<script>\n@plg-tech/plg ` after\n</script>",
+        "the ` char\n<script>\n@\u200bplg-tech/plg ` after\n</script>",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_setext_heading_or_html_block(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # An escaped backtick is a literal character and cannot open a code span.
+    ("\\` @active \\`", "\\` @\u200bactive \\`"),
+    # An escaped backslash leaves the backtick free to open a code span.
+    ("\\\\`@literal` @active", "\\\\`@literal` @\u200bactive"),
+    # Inside a code span a backslash does not escape the closing backtick.
+    ("`@literal\\` @active", "`@literal\\` @\u200bactive"),
+])
+def test_neutralize_gitlab_mentions_treats_an_escaped_backtick_as_a_literal(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_ignores_a_backtick_fence_with_a_backtick_in_its_info_string():
+    text = "``` info`string\n@active\n```"
+    expected = "``` info`string\n@\u200bactive\n```"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("_@active_", "_@\u200bactive_"),
+    ("__@active__", "__@\u200bactive__"),
+    ("see _@active_ here", "see _@\u200bactive_ here"),
+    ("snake_@literal", "snake_@literal"),
+])
+def test_neutralize_gitlab_mentions_handles_underscore_emphasis(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
 def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
     text = "- item\n\n      @literal-code\n@active"
     expected = "- item\n\n      @literal-code\n@\u200bactive"
